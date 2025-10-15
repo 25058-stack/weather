@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>일일 날씨 데이터</title>
+    <!-- Tailwind CSS 로드 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Inter 폰트 사용 */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        .card-shadow {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+    </style>
+    <script>
+        // API 키는 비어있는 문자열로 둡니다. Canvas 환경에서 자동 주입됩니다.
+        const apiKey = "";
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+        
+        // 지연 시간을 위한 헬퍼 함수
+        const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        /**
+         * 지수 백오프를 사용하여 API 호출을 시도합니다.
+         */
+        async function fetchWithExponentialBackoff(payload) {
+            const maxRetries = 5;
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.status === 429 && attempt < maxRetries - 1) {
+                        // Rate limit error, wait and retry
+                        const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+                        await delay(waitTime);
+                        continue;
+                    }
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+
+                    return await response.json();
+
+                } catch (error) {
+                    console.error("API Call failed:", error);
+                    if (attempt === maxRetries - 1) throw error;
+                    
+                    const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+                    await delay(waitTime);
+                }
+            }
+        }
+
+        /**
+         * Gemini API를 호출하여 최신 날씨 정보를 가져옵니다.
+         * @param {string} location 검색할 위치 (기본값: 서울)
+         */
+        async function fetchWeather(location = "서울") {
+            const locationKr = location || "서울";
+            // 영문 위치 정보는 검색 정확도를 위해 사용됩니다.
+            const locationEn = locationKr === "서울" ? "Seoul, South Korea" : 
+                             locationKr === "뉴욕" ? "New York, USA" :
+                             locationKr === "런던" ? "London, UK" :
+                             locationKr === "도쿄" ? "Tokyo, Japan" :
+                             locationKr === "베이징" ? "Beijing, China" :
+                             locationKr === "파리" ? "Paris, France" :
+                             locationKr === "시드니" ? "Sydney, Australia" :
+                             locationKr === "리우데자네이루" ? "Rio de Janeiro, Brazil" :
+                             locationKr === "베를린" ? "Berlin, Germany" :
+                             locationKr === "두바이" ? "Dubai, UAE" : locationKr;
+            
+            // **시스템 프롬프트 수정: 완벽한 한국어 출력 및 섭씨 명시**
+            const systemPrompt = "당신은 로봇 데이터 피더입니다. 요청된 위치의 현재 **날씨 상태 키워드 (적절한 이모티콘 포함)**, **현재 온도(정확한 수치, 섭씨)**, **미세먼지 등급 (농도 수치)**, 그리고 **초미세먼지 등급 (농도 수치)**을 오직 4개의 핵심 정보로 구분하여 반환하세요. 모든 출력은 **완벽한 한국어**로 작성되어야 하며, 미세먼지 및 초미세먼지 정보는 반드시 '등급 (농도 수치)' 형태로 괄호 안에 농도 수치를 포함하여 제공하고, 모든 정보는 '키: 값' 형태로 줄바꿈하여 제공하십시오. 인사말이나 추가 설명은 절대 포함하지 마세요.";
+            
+            // **사용자 쿼리**
+            const userQuery = `오늘의 ${locationKr} 날씨 상태 키워드, 현재 온도, 미세먼지(Fine Particulate Matter) 정보, 그리고 초미세먼지(Ultra Fine Particulate Matter) 정보를 알려주세요. (Weather condition, current temperature, fine dust level, and ultra fine dust level for ${locationEn})`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+            };
+
+            const resultContainer = document.getElementById('weather-result');
+            const loadingIndicator = document.getElementById('loading-indicator');
+            const sourceContainer = document.getElementById('sources-container');
+            const fetchButton = document.getElementById('fetch-button');
+            
+            resultContainer.innerHTML = '';
+            sourceContainer.innerHTML = '';
+            loadingIndicator.classList.remove('hidden');
+            fetchButton.disabled = true;
+
+            try {
+                const result = await fetchWithExponentialBackoff(payload);
+                const candidate = result.candidates?.[0];
+
+                if (candidate && candidate.content?.parts?.[0]?.text) {
+                    const text = candidate.content.parts[0].text;
+                    
+                    // 1. 결과 텍스트 표시
+                    // whitespace-pre-wrap으로 줄바꿈이 유지되도록 처리합니다.
+                    // 폰트 크기를 조금 더 키워서 이모티콘이 잘 보이도록 조정했습니다 (text-xl -> text-2xl).
+                    resultContainer.innerHTML = `<pre class="text-2xl font-mono text-gray-800 leading-relaxed whitespace-pre-wrap text-left w-full">${text.trim()}</pre>`;
+
+                    // 2. 출처 정보 추출 및 표시
+                    let sources = [];
+                    const groundingMetadata = candidate.groundingMetadata;
+                    if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                        sources = groundingMetadata.groundingAttributions
+                            .map(attribution => ({
+                                uri: attribution.web?.uri,
+                                title: attribution.web?.title,
+                            }))
+                            .filter(source => source.uri && source.title);
+                    }
+
+                    if (sources.length > 0) {
+                        const sourceList = sources.map((s, index) => 
+                            `<li class="mt-1 text-sm text-blue-600 hover:text-blue-800 transition duration-150">
+                                <a href="${s.uri}" target="_blank" rel="noopener noreferrer" title="${s.title}">
+                                    ${index + 1}. ${s.title.substring(0, 50)}...
+                                </a>
+                            </li>`
+                        ).join('');
+
+                        sourceContainer.innerHTML = `
+                            <div class="mt-4 pt-3 border-t border-gray-100">
+                                <p class="text-xs font-semibold text-gray-500 mb-2">정보 출처 (Google Search)</p>
+                                <ul class="list-none p-0 m-0">${sourceList}</ul>
+                            </div>
+                        `;
+                    }
+                    
+                    // 현재 시간 업데이트
+                    const now = new Date();
+                    document.getElementById('last-updated').textContent = `최근 업데이트: ${now.toLocaleTimeString('ko-KR')}`;
+                    document.getElementById('weather-card').classList.remove('border-red-400');
+                    document.getElementById('weather-card').classList.add('border-green-400');
+
+
+                } else {
+                    resultContainer.innerHTML = '<p class="text-red-500">날씨 정보를 가져오는 데 실패했습니다. 응답 구조를 확인해 주세요.</p>';
+                }
+            } catch (error) {
+                console.error("Error during weather fetch:", error);
+                resultContainer.innerHTML = '<p class="text-red-500">죄송합니다. API 호출 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.</p>';
+                document.getElementById('weather-card').classList.remove('border-green-400');
+                document.getElementById('weather-card').classList.add('border-red-400');
+            } finally {
+                loadingIndicator.classList.add('hidden');
+                fetchButton.disabled = false;
+            }
+        }
+        
+        // 앱 초기화 및 이벤트 리스너 설정
+        window.onload = function() {
+            // 초기 위치는 서울로 설정
+            const locationInput = document.getElementById('location-input');
+            const fetchButton = document.getElementById('fetch-button');
+            
+            // 버튼 클릭 시 날씨 정보 가져오기
+            fetchButton.addEventListener('click', () => {
+                // select 요소의 value를 가져옵니다.
+                fetchWeather(locationInput.value || "서울");
+            });
+
+            // select 박스 값이 변경될 때도 자동 업데이트 되도록 설정
+            locationInput.addEventListener('change', () => {
+                fetchWeather(locationInput.value);
+            });
+
+            // 페이지 로드 시 자동으로 한 번 실행
+            fetchWeather(locationInput.value || "서울");
+        };
+    </script>
+</head>
+<body class="p-4 sm:p-8 flex items-start justify-center min-h-screen">
+
+    <div class="w-full max-w-lg relative pt-4"> <!-- relative와 pt-4 추가 -->
+        <!-- 오른쪽 위에 '1610 손보미' 텍스트 수정됨 (크기: text-lg, 굵기: font-bold, 색상: text-gray-700) -->
+        <div class="absolute top-4 right-4 text-lg text-gray-700 font-bold">1610 손보미</div>
+
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-extrabold text-gray-900 tracking-tight">☀️ 일일 날씨 데이터 피드</h1>
+            <!-- 설명 문구 수정됨 -->
+            <p class="mt-2 text-lg text-gray-500">선택된 도시의 실시간 핵심 날씨 정보를 제공합니다.</p>
+        </header>
+
+        <!-- 입력 섹션 (도시 선택 드롭다운) -->
+        <div class="bg-white p-6 mb-6 rounded-xl card-shadow flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3">
+            <select
+                id="location-input"
+                class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150 text-gray-700"
+            >
+                <!-- 옵션에 영문 정보가 다시 추가되었습니다. -->
+                <option value="서울" selected>서울 (Seoul, South Korea)</option>
+                <option value="뉴욕">뉴욕 (New York, USA)</option>
+                <option value="런던">런던 (London, UK)</option>
+                <option value="도쿄">도쿄 (Tokyo, Japan)</option>
+                <option value="베이징">베이징 (Beijing, China)</option>
+                <option value="파리">파리 (Paris, France)</option>
+                <option value="시드니">시드니 (Sydney, Australia)</option>
+                <option value="리우데자네이루">리우데자네이루 (Rio de Janeiro, Brazil)</option>
+                <option value="베를린">베를린 (Berlin, Germany)</option>
+                <option value="두바이">두바이 (Dubai, UAE)</option>
+            </select>
+            <button 
+                id="fetch-button"
+                class="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition duration-150 shadow-md hover:shadow-lg focus:outline-none focus:ring-4 focus:ring-blue-500 focus:ring-opacity-50"
+            >
+                날씨 데이터 가져오기
+            </button>
+        </div>
+
+        <!-- 날씨 알림 카드 (결과 표시) -->
+        <div id="weather-card" class="bg-white p-6 rounded-xl border-t-4 border-green-400 card-shadow transition-all duration-300">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-2xl font-bold text-gray-800">오늘의 날씨</h2>
+                <div id="loading-indicator" class="hidden flex items-center space-x-2 text-blue-500">
+                    <svg class="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span class="text-sm font-medium">정보 가져오는 중...</span>
+                </div>
+            </div>
+            
+            <!-- 날씨 결과가 표시될 영역 -->
+            <div id="weather-result" class="min-h-[100px] flex items-center justify-start text-center p-2">
+                <p class="text-gray-500">날씨 데이터를 가져오려면 "날씨 데이터 가져오기" 버튼을 누르거나 도시를 선택하세요.</p>
+            </div>
+
+            <!-- 출처 정보가 표시될 영역 -->
+            <div id="sources-container">
+                <!-- Google Search 출처가 여기에 삽입됩니다. -->
+            </div>
+
+            <div class="mt-4 pt-4 border-t border-gray-100 text-right">
+                <p id="last-updated" class="text-xs text-gray-400">최근 업데이트: -</p>
+            </div>
+        </div>
+
+        <footer class="mt-8 text-center text-sm text-gray-400">
+            * 이 앱은 Gemini 모델의 Google Search 기능을 활용하여 실시간 정보를 제공합니다.
+        </footer>
+    </div>
+</body>
+</html>
+
